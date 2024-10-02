@@ -12,7 +12,7 @@ const Pair = struct {
     key: []u8,
     value: []u8,
 
-    pub fn to_bytes(self: *Self, allocator: *std.mem.Allocator) ![]u8 {
+    pub fn toBytes(self: *Self, allocator: *std.mem.Allocator) ![]u8 {
         var bytes = try allocator.alloc(u8, self.key.len + self.value.len + 8);
         var writer = std.io.fixedBufferStream(bytes[0..]).writer();
         try writer.writeIntLittle(u64, self.key.len);
