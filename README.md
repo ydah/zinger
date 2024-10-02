@@ -1,2 +1,2 @@
-# ziggy
+# zinger
 A pure Zig RDBMS
