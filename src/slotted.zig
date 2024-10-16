@@ -122,4 +122,8 @@ pub const Slotted = struct {
             ptr.offset = free_space_offset_new;
         }
     }
+
+    pub fn getIndex(self: *Slotted, index: usize) Pointer {
+        return self.pointers()[index];
+    }
 };
