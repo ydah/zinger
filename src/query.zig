@@ -1,5 +1,5 @@
 const std = @import("std");
-const btree = @import("btree");
+const BTree = @import("btree");
 const tuple = @import("tuple");
 const BufferPoolManager = @import("buffer").BufferPoolManager;
 const PageId = @import("disk").PageId;
@@ -11,25 +11,25 @@ pub const TupleSearchMode = union(enum) {
     Start,
     Key: []const []u8,
 
-    pub fn encode(self: TupleSearchMode) SearchMode {
+    pub fn encode(self: TupleSearchMode) BTree.SearchMode {
         return switch (self) {
-            .Start => SearchMode.Start,
+            .Start => BTree.SearchMode.Start,
             .Key => {
                 var key = std.ArrayList(u8).init(std.heap.page_allocator);
                 defer key.deinit();
                 tuple.encode(self.Key, &key);
-                return SearchMode.Key(key.items);
+                return BTree.SearchMode.Key(key.items);
             },
         };
     }
 };
 
-pub const Executor = interface {
-    fn next(self: *Executor, bufmgr: *BufferPoolManager) !?Tuple;
+const Executor = struct {
+    next: fn (executor: *Executor, bufmgr: *BufferPoolManager) ?Tuple,
 };
 
-pub const PlanNode = interface {
-    fn start(self: *PlanNode, bufmgr: *BufferPoolManager) !*Executor;
+const PlanNode = struct {
+    start: fn (plan_node: *PlanNode, bufmgr: *BufferPoolManager) *Executor,
 };
 
 pub const SeqScan = struct {
@@ -48,7 +48,7 @@ pub const SeqScan = struct {
 };
 
 pub const ExecSeqScan = struct {
-    table_iter: btree.Iter,
+    table_iter: BTree.Iter,
     while_cond: fn (TupleSlice) bool,
 
     pub fn next(self: *ExecSeqScan, bufmgr: *BufferPoolManager) !?Tuple {
@@ -89,9 +89,9 @@ pub const ExecFilter = struct {
 
     pub fn next(self: *ExecFilter, bufmgr: *BufferPoolManager) !?Tuple {
         while (true) {
-            const tuple = try self.inner_iter.next(bufmgr);
-            if (tuple == null) return null;
-            if (self.cond(tuple.?)) return tuple;
+            const ntuple = try self.inner_iter.next(bufmgr);
+            if (ntuple == null) return null;
+            if (self.cond(ntuple.?)) return ntuple;
         }
     }
 };
