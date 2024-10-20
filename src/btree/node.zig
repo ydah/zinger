@@ -1,3 +1,6 @@
+const Leaf = @import("leaf.zig");
+const Branch = @import("branch.zig");
+
 pub const NODE_TYPE_LEAF = "LEAF    ";
 pub const NODE_TYPE_BRANCH = "BRANCH  ";
 
@@ -33,7 +36,7 @@ pub const Body = union {
     leaf: Leaf,
     branch: Branch,
 
-    pub fn init(self: *Self, node_type: [8]u8, bytes: anytype) Body {
+    pub fn init(node_type: [8]u8, bytes: anytype) Body {
         return switch (node_type) {
             NODE_TYPE_LEAF => Body{ .leaf = Leaf.init(bytes) },
             NODE_TYPE_BRANCH => Body{ .branch = Branch.init(bytes) },
