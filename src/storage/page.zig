@@ -2,10 +2,9 @@ const std = @import("std");
 
 pub const PageId = struct {
     const Self = @This();
+    pub const INVALID_PAGE_ID = std.math.maxInt(u64);
 
-    value: u64,
-
-    pub const INVALID_PAGE_ID: Self = Self{ .value = std.math.maxU64(u64) };
+    value: u64 = INVALID_PAGE_ID,
 
     pub fn init(value: u64) Self {
         return Self{ .value = value };
@@ -16,24 +15,18 @@ pub const PageId = struct {
     }
 
     pub fn valid(self: Self) ?Self {
-        return switch (self) {
+        return switch (self.value) {
             Self.INVALID_PAGE_ID => null,
             else => self,
         };
     }
-
-    pub fn fromOptional(page_id: ?Self) Self {
-        return switch (page_id) {
-            null => Self.INVALID_PAGE_ID,
-            else => page_id.?,
-        };
-    }
-
-    pub fn fromBytes(bytes: []const u8) !Self {
-        if (bytes.len != @sizeOf(u64)) {
-            return error.InvalidByteSize;
-        }
-        const value = std.mem.bytesAsValue(u64, bytes);
-        return Self.init(value);
-    }
 };
+
+test "PageId" {
+    var page_id = PageId.init(42);
+    const value = page_id.toU64();
+    try std.testing.expectEqual(value, 42);
+    try std.testing.expectEqual(page_id.valid(), page_id);
+    var invalid_page_id = PageId{};
+    try std.testing.expectEqual(invalid_page_id.valid(), null);
+}
