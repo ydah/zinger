@@ -8,6 +8,7 @@ const usage =
     \\  zinger <db-path> get <key>
     \\  zinger <db-path> delete <key>
     \\  zinger <db-path> scan [--start <key>] [--limit <n>]
+    \\  zinger <db-path> sql "<SQL>"
     \\
 ;
 
@@ -111,6 +112,17 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    if (std.mem.eql(u8, command, "sql")) {
+        if (args.items.len != 4) {
+            try printStderr(io, "{s}", .{usage});
+            std.process.exit(2);
+        }
+        const output = try zinger.executeSql(allocator, &db, args.items[3]);
+        defer allocator.free(output);
+        try printStdout(io, "{s}", .{output});
+        return;
+    }
+
     try printStderr(io, "{s}", .{usage});
     std.process.exit(2);
 }
@@ -134,4 +146,5 @@ fn printStderr(io: std.Io, comptime fmt: []const u8, args: anytype) !void {
 test "usage includes commands" {
     try std.testing.expect(std.mem.indexOf(u8, usage, "put") != null);
     try std.testing.expect(std.mem.indexOf(u8, usage, "scan") != null);
+    try std.testing.expect(std.mem.indexOf(u8, usage, "sql") != null);
 }
