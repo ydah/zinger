@@ -1,6 +1,20 @@
-/// A pure Zig RDBMS.
-pub const Self: type = @This();
+const std = @import("std");
 
-pub const buffer = @import("buffer.zig");
-pub const disk = @import("disk.zig");
+/// zinger is currently a durable ordered key-value store foundation for a
+/// future pure Zig RDBMS.
+pub const storage = @import("storage.zig");
 pub const btree = @import("btree.zig");
+pub const db = @import("db.zig");
+
+pub const Database = db.Database;
+pub const Pair = btree.PairOwned;
+
+comptime {
+    _ = storage;
+    _ = btree;
+    _ = db;
+}
+
+test {
+    std.testing.refAllDecls(@This());
+}

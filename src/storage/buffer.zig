@@ -1,172 +1,206 @@
 const std = @import("std");
+const page = @import("page.zig");
 const disk = @import("disk.zig");
-const DiskManager = disk.DiskManager;
-const PageId = disk.PageId;
-const PAGE_SIZE = disk.PAGE_SIZE;
 
-pub const BufferId = struct {
-    id: usize,
-};
-
-pub const Page = [PAGE_SIZE]u8;
+pub const PageId = page.PageId;
+pub const PAGE_SIZE = page.PAGE_SIZE;
+pub const DiskManager = disk.DiskManager;
 
 pub const Buffer = struct {
+    page_id: PageId = PageId.invalid(),
+    data: [PAGE_SIZE]u8 = [_]u8{0} ** PAGE_SIZE,
+    is_dirty: bool = false,
+    pin_count: usize = 0,
+    usage_count: u8 = 0,
+
+    fn reset(self: *Buffer, page_id: PageId) void {
+        self.page_id = page_id;
+        @memset(&self.data, 0);
+        self.is_dirty = false;
+        self.pin_count = 0;
+        self.usage_count = 0;
+    }
+};
+
+pub const BufferPoolManager = struct {
     const Self = @This();
 
-    page_id: PageId,
-    page: Page,
-    is_dirty: bool,
-    references_count: usize,
+    allocator: std.mem.Allocator,
+    disk: *DiskManager,
+    frames: []Buffer,
+    page_table: std.AutoHashMap(u64, usize),
+    clock_hand: usize = 0,
 
-    pub fn init() Self {
-        const page: [PAGE_SIZE]u8 = undefined;
-        @memset(page, 0);
+    pub fn init(allocator: std.mem.Allocator, disk_manager: *DiskManager, pool_size: usize) !Self {
+        if (pool_size == 0) return error.InvalidPoolSize;
+        const frames = try allocator.alloc(Buffer, pool_size);
+        for (frames) |*frame| frame.* = Buffer{};
         return Self{
-            .page_id = PageId.INVALID_PAGE_ID,
-            .page = page,
-            .is_dirty = false,
-            .references_count = 0,
-        };
-    }
-};
-
-pub const Frame = struct {
-    usge_count: usize,
-    buffer: Buffer,
-};
-
-pub const BufferPool = struct {
-    const Self = @This();
-
-    buffers: std.ArrayList(Frame),
-    next_victim: BufferId,
-
-    pub fn init(pool_size: usize) Self {
-        const buffers = std.ArrayList(Frame).init(pool_size);
-        return Self{
-            .buffers = buffers,
-            .next_victim = BufferId{ .id = 0 },
+            .allocator = allocator,
+            .disk = disk_manager,
+            .frames = frames,
+            .page_table = std.AutoHashMap(u64, usize).init(allocator),
         };
     }
 
-    fn size(self: Self) usize {
-        return self.buffers.items.len;
+    pub fn deinit(self: *Self) void {
+        self.page_table.deinit();
+        self.allocator.free(self.frames);
+        self.* = undefined;
     }
 
-    fn evict(self: Self) ?BufferId {
-        const pool_size = self.size();
-        var consecutive_pinned = 0;
-        const victim_id = while (true) {
-            const next_victim_id = self.next_victim.id;
-            const frame = self.buffers.items[next_victim_id];
-            if (frame.usge_count == 0) {}
-            if (frame.buffer.references_count == 0) {
-                frame.usage_count -= 1;
-                consecutive_pinned = 0;
-            } else {
-                consecutive_pinned += 1;
-                if (consecutive_pinned >= pool_size) {
-                    return null;
-                }
-            }
-            self.next_victim_id = self.increment_id(self, self.next_victim.id);
-        };
-        return victim_id;
-    }
+    pub fn newPage(self: *Self) !*Buffer {
+        const frame_index = try self.victimFrame();
+        var frame = &self.frames[frame_index];
+        try self.evictFrame(frame);
 
-    fn increment_id(self: Self, buffer_id: usize) usize {
-        return (buffer_id + 1) % self.size();
-    }
-};
-
-const Error = error{
-    NoFreeBuffer,
-};
-
-const BufferPoolManager = struct {
-    const Self = @This();
-
-    disk_manager: DiskManager,
-    buffer_pool: BufferPool,
-    page_table: std.HashMap(PageId, BufferId),
-
-    pub fn init(disk_manager: DiskManager, pool: BufferPool) Self {
-        const page_table = std.HashMap.init();
-        return Self{
-            .disk_manager = disk_manager,
-            .buffer_pool = pool,
-            .page_table = page_table,
-        };
-    }
-
-    pub fn fetchPage(self: *Self, page_id: PageId) !Buffer {
-        if (self.page_table.get(page_id)) |buffer_id| {
-            var frame = &self.buffer_pool.buffers[buffer_id.id];
-            frame.usage_count += 1;
-            frame.buffer.references_count += 1;
-            return &frame.buffer;
-        }
-
-        const buffer_id = self.buffer_pool.evict(self.buffer_pool);
-        if (buffer_id == null) {
-            return Error.NoFreeBuffer;
-        }
-
-        var frame = &self.buffer_pool.buffers[buffer_id];
-        const evict_page_id = frame.buffer.page_id;
-        {
-            var buffer = &frame.buffer;
-            if (buffer == null) {}
-            if (buffer.is_dirty) {
-                try self.disk_manager.writePage(evict_page_id, buffer.page);
-            }
-            buffer.page_id = page_id;
-            buffer.is_dirty = false;
-            try self.disk_manager.readPage(page_id, buffer.page);
-            frame.usage_count = 1;
-        }
-
-        frame.buffer.references_count += 1;
-        const page = frame.buffer;
-        self.page_table.remove(self.page_table, evict_page_id);
-        self.page_table.put(page_id, buffer_id);
-        return page;
-    }
-
-    pub fn createPage(self: *Self) !Buffer {
-        const buffer_id = self.buffer_pool.evict(self.buffer_pool);
-        if (buffer_id == null) {
-            return Error.NoFreeBuffer;
-        }
-
-        var frame = &self.buffer_pool.buffers[buffer_id];
-        const evict_page_id = frame.buffer.page_id;
-        const buffer = &frame.buffer;
-        if (buffer.is_dirty) {
-            self.disk_manager.writePage(evict_page_id, buffer.page);
-        }
-        const page_id = self.disk_manager.allocatePage();
-        buffer = Buffer.init();
-        buffer.page_id = page_id;
-        buffer.is_dirty = true;
+        const page_id = try self.disk.allocatePage();
+        frame.reset(page_id);
+        frame.is_dirty = true;
+        frame.pin_count = 1;
         frame.usage_count = 1;
-
-        buffer.references_count += 1;
-        self.page_table.remove(self.page_table, evict_page_id);
-        self.page_table.put(page_id, buffer_id);
-        return buffer;
+        try self.page_table.put(page_id.toU64(), frame_index);
+        return frame;
     }
 
-    pub fn flush(self: *Self) !void {
-        const entries = self.page_table.entries();
-        while (entries.next()) |entry| {
-            const page_id = entry.key;
-            const buffer_id = entry.value;
-            const frame = &self.buffer_pool.buffers[buffer_id.id];
-            const page = &frame.buffer.page;
-            self.disk_manager.writePage(page_id, page);
-            frame.buffer.is_dirty = false;
+    pub fn fetchPage(self: *Self, page_id: PageId) !*Buffer {
+        if (!page_id.isValid()) return error.InvalidPageId;
+        if (self.page_table.get(page_id.toU64())) |frame_index| {
+            var frame = &self.frames[frame_index];
+            frame.pin_count += 1;
+            frame.usage_count = 1;
+            return frame;
         }
-        self.disk_manager.sync();
+
+        const frame_index = try self.victimFrame();
+        var frame = &self.frames[frame_index];
+        try self.evictFrame(frame);
+        frame.reset(page_id);
+        try self.disk.readPage(page_id, &frame.data);
+        frame.pin_count = 1;
+        frame.usage_count = 1;
+        try self.page_table.put(page_id.toU64(), frame_index);
+        return frame;
+    }
+
+    pub fn unpinPage(self: *Self, page_id: PageId, is_dirty: bool) !void {
+        const frame_index = self.page_table.get(page_id.toU64()) orelse return error.PageNotInPool;
+        var frame = &self.frames[frame_index];
+        if (frame.pin_count == 0) return error.PageNotPinned;
+        frame.pin_count -= 1;
+        frame.is_dirty = frame.is_dirty or is_dirty;
+    }
+
+    pub fn flushPage(self: *Self, page_id: PageId) !void {
+        const frame_index = self.page_table.get(page_id.toU64()) orelse return error.PageNotInPool;
+        var frame = &self.frames[frame_index];
+        if (!frame.page_id.isValid()) return;
+        if (frame.is_dirty) {
+            try self.disk.writePage(frame.page_id, &frame.data);
+            frame.is_dirty = false;
+        }
+    }
+
+    pub fn flushAll(self: *Self) !void {
+        for (self.frames) |*frame| {
+            if (frame.page_id.isValid() and frame.is_dirty) {
+                try self.disk.writePage(frame.page_id, &frame.data);
+                frame.is_dirty = false;
+            }
+        }
+        try self.disk.sync();
+    }
+
+    fn victimFrame(self: *Self) !usize {
+        for (self.frames, 0..) |*frame, index| {
+            if (!frame.page_id.isValid()) {
+                self.clock_hand = (index + 1) % self.frames.len;
+                return index;
+            }
+        }
+
+        var scanned: usize = 0;
+        while (scanned < self.frames.len * 2) : (scanned += 1) {
+            const index = self.clock_hand;
+            self.clock_hand = (self.clock_hand + 1) % self.frames.len;
+            var frame = &self.frames[index];
+            if (frame.pin_count != 0) continue;
+            if (frame.usage_count == 0) return index;
+            frame.usage_count = 0;
+        }
+        return error.NoFreeFrame;
+    }
+
+    fn evictFrame(self: *Self, frame: *Buffer) !void {
+        if (!frame.page_id.isValid()) return;
+        if (frame.pin_count != 0) return error.PagePinned;
+        if (frame.is_dirty) {
+            try self.disk.writePage(frame.page_id, &frame.data);
+            frame.is_dirty = false;
+        }
+        _ = self.page_table.remove(frame.page_id.toU64());
     }
 };
+
+test "BufferPoolManager creates fetches flushes and evicts pages" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile(std.testing.io, "buffer.db", .{ .read = true });
+    var disk_manager = try DiskManager.init(file);
+    defer disk_manager.close();
+
+    var bpm = try BufferPoolManager.init(std.testing.allocator, &disk_manager, 2);
+    defer bpm.deinit();
+
+    const first_id = blk: {
+        const page1 = try bpm.newPage();
+        page1.data[0] = 11;
+        const id = page1.page_id;
+        try bpm.unpinPage(id, true);
+        break :blk id;
+    };
+
+    const second_id = blk: {
+        const page2 = try bpm.newPage();
+        page2.data[0] = 22;
+        const id = page2.page_id;
+        try bpm.unpinPage(id, true);
+        break :blk id;
+    };
+
+    const third_id = blk: {
+        const page3 = try bpm.newPage();
+        page3.data[0] = 33;
+        const id = page3.page_id;
+        try bpm.unpinPage(id, true);
+        break :blk id;
+    };
+
+    try bpm.flushAll();
+
+    const fetched = try bpm.fetchPage(first_id);
+    try std.testing.expectEqual(@as(u8, 11), fetched.data[0]);
+    try bpm.unpinPage(first_id, false);
+
+    const fetched3 = try bpm.fetchPage(third_id);
+    try std.testing.expectEqual(@as(u8, 33), fetched3.data[0]);
+    try bpm.unpinPage(third_id, false);
+
+    _ = second_id;
+}
+
+test "BufferPoolManager reports all pinned frames" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile(std.testing.io, "pinned.db", .{ .read = true });
+    var disk_manager = try DiskManager.init(file);
+    defer disk_manager.close();
+
+    var bpm = try BufferPoolManager.init(std.testing.allocator, &disk_manager, 1);
+    defer bpm.deinit();
+
+    _ = try bpm.newPage();
+    try std.testing.expectError(error.NoFreeFrame, bpm.newPage());
+}
